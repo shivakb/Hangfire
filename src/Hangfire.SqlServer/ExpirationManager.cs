@@ -74,7 +74,7 @@ namespace Hangfire.SqlServer
                     {
                         affected = ExecuteNonQuery(
                             connection,
-                            GetQuery(_storage.SchemaName, table),
+                            GetExpireQuery(_storage.SchemaName, table),
                             cancellationToken,
                             new SqlParameter("@count", NumberOfRecordsInSinglePass),
                             new SqlParameter("@now", DateTime.UtcNow));
@@ -123,33 +123,13 @@ It will be retried in {_checkInterval.TotalSeconds} seconds.",
             }
         }
 
-        private static string GetQuery(string schemaName, string table)
+        private static string GetExpireQuery(string schemaName, string table)
         {
-            // Okay, let me explain all the bells and whistles in this query:
-            //
-            // SET TRANSACTION... is to prevent a query from running, when a
-            // higher isolation level was set, for example, when it was leaked:
-            // http://www.levibotelho.com/development/plugging-isolation-leaks-in-sql-server.
-            //
-            // LOOP JOIN hint is here to prevent merge or hash joins, that
-            // cause index scan operators, and they are unacceptable, because
-            // may block running background jobs.
-            //
-            // OPTIMIZE FOR instructs engine to generate better plan that
-            // causes much fewer logical reads, because of additional sorting
-            // before querying data in nested loops. The value was discovered
-            // in practice.
-            //
-            // READPAST hint is used to simply skip blocked records, because
-            // it's better to ignore them instead of waiting for unlock.
-            //
-            // TOP is to prevent lock escalations that may cause background
-            // processing to stop, and to avoid larger batches to rollback
-            // in case of connection/process termination.
-
-            return
-$@"set transaction isolation level read committed;
-delete top (@count) from [{schemaName}].[{table}] with (readpast) 
+            return $@"
+set deadlock_priority low;
+set transaction isolation level read committed;
+set lock_timeout 1000;
+delete top (@count) from [{schemaName}].[{table}]
 where ExpireAt < @now
 option (loop join, optimize for (@count = 20000));";
         }
